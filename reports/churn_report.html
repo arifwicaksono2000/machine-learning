@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Churn Experiment Report</title>
+<style>
+  @page { size: A4 landscape; margin: 14mm; }
+  body { font-family: Segoe UI, Arial, sans-serif; font-size: 11px; color: #111; background: #fff;
+         max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 22px 0 6px; border-bottom: 2px solid #333; padding-bottom: 3px; }
+  .meta { color: #555; margin-bottom: 10px; }
+  table.t { border-collapse: collapse; width: 100%; margin-bottom: 6px; }
+  table.t th, table.t td { border: 1px solid #999; padding: 3px 6px; text-align: left; }
+  table.t th { background: #e8e8e8; }
+  table.t tr:nth-child(even) td { background: #f7f7f7; }
+  table.t tr { page-break-inside: avoid; }
+  table.t thead { display: table-header-group; }
+  pre { background: #f4f4f4; border: 1px solid #ccc; padding: 8px; font-size: 11px; }
+  .cm td, .cm th { text-align: center !important; }
+  .note { color: #444; }
+  .break { page-break-before: always; }
+</style></head><body>
+
+<h1>Telco Customer Churn: Experiment Report</h1>
+<div class="meta">Generated 2026-10-01 13:07 &middot; Dataset: WA_Fn-UseC_-Telco-Customer-Churn.csv</div>
+
+<h2>1. Dataset</h2>
+<p>7,043 customers, 8 features used. Churn rate: 26.5%
+(imbalanced). Train / test split: 5,634 / 1,409 rows (80/20, stratified, random_state=42).
+Cross-validation: 5-fold StratifiedKFold. Model selection metric: F1 (churn class).</p>
+
+<h2>2. Feature Engineering</h2>
+<table class="dataframe t">
+  <thead>
+    <tr style="text-align: right;">
+      <th>No</th>
+      <th>Operation</th>
+      <th>Columns</th>
+      <th>Reason</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>Drop column</td>
+      <td>customerID</td>
+      <td>Unique ID per customer, no predictive value</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Data type conversion (text to number)</td>
+      <td>TotalCharges</td>
+      <td>Stored as text; pd.to_numeric(errors='coerce')</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Missing value imputation (fill with 0)</td>
+      <td>TotalCharges</td>
+      <td>11 blank values, all with tenure = 0 (new customers not yet billed)</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Feature selection</td>
+      <td>gender, SeniorCitizen, Partner, Dependents, tenure, Contract, MonthlyCharges, TotalCharges</td>
+      <td>Columns relevant to churn</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Target encoding (label mapping)</td>
+      <td>Churn</td>
+      <td>No = 0, Yes = 1</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>One-hot encoding</td>
+      <td>gender, Partner, Dependents, Contract</td>
+      <td>Categories have no order; handle_unknown='ignore'</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>Standard scaling</td>
+      <td>SeniorCitizen, tenure, MonthlyCharges, TotalCharges</td>
+      <td>Same scale for all numeric features (needed for KNN)</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>3. Model Configuration</h2>
+<table class="dataframe t">
+  <thead>
+    <tr style="text-align: right;">
+      <th>Model</th>
+      <th>Important Parameters</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>KNN</td>
+      <td>n_neighbors = [5, 15, 25]; weights = ['uniform', 'distance']</td>
+    </tr>
+    <tr>
+      <td>Decision Tree</td>
+      <td>max_depth = [3, 5, 10, None]; min_samples_leaf = [1, 5, 20]; class_weight = balanced</td>
+    </tr>
+    <tr>
+      <td>Random Forest</td>
+      <td>n_estimators = [100, 200]; max_depth = [5, 10, None]; min_samples_leaf = [1, 5]; class_weight = balanced</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>4. Final Comparison (Test Set)</h2>
+<table class="dataframe t">
+  <thead>
+    <tr style="text-align: right;">
+      <th>Model</th>
+      <th>Best Run</th>
+      <th>Best Parameters</th>
+      <th>Accuracy</th>
+      <th>Precision</th>
+      <th>Recall</th>
+      <th>F1</th>
+      <th>Search Time (s)</th>
+      <th>Predict Time (s)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Random Forest</td>
+      <td>RF-08</td>
+      <td>max_depth=10, min_samples_leaf=5, n_estimators=200</td>
+      <td>0.742</td>
+      <td>0.508</td>
+      <td>0.802</td>
+      <td>0.622</td>
+      <td>3.435</td>
+      <td>0.028</td>
+    </tr>
+    <tr>
+      <td>Decision Tree</td>
+      <td>DT-01</td>
+      <td>max_depth=3, min_samples_leaf=1</td>
+      <td>0.737</td>
+      <td>0.504</td>
+      <td>0.759</td>
+      <td>0.606</td>
+      <td>0.277</td>
+      <td>0.003</td>
+    </tr>
+    <tr>
+      <td>KNN</td>
+      <td>KNN-03</td>
+      <td>n_neighbors=15, weights=uniform</td>
+      <td>0.767</td>
+      <td>0.577</td>
+      <td>0.452</td>
+      <td>0.507</td>
+      <td>4.709</td>
+      <td>0.028</td>
+    </tr>
+  </tbody>
+</table>
+<p class="note">Best model: <b>Random Forest</b>. Metrics are for the churn class (1).
+Search time = full GridSearchCV time for that model.</p>
+
+<h2>5. Best Model Detail: Random Forest</h2>
+<table class="t cm" style="width:auto">
+  <tr><th></th><th>Predicted Stay</th><th>Predicted Churn</th></tr>
+  <tr><th>Actual Stay</th><td>745 (correct)</td><td>290 (false alarm)</td></tr>
+  <tr><th>Actual Churn</th><td>74 (missed)</td><td>300 (caught)</td></tr>
+</table>
+<pre>              precision    recall  f1-score   support
+
+    Stay (0)       0.91      0.72      0.80      1035
+   Churn (1)       0.51      0.80      0.62       374
+
+    accuracy                           0.74      1409
+   macro avg       0.71      0.76      0.71      1409
+weighted avg       0.80      0.74      0.76      1409
+</pre>
+
+<h2 class="break">6. Experiment Results: All Runs</h2>
+<p class="note">Each row is one parameter combination (run). Metrics are 5-fold cross-validation averages
+on the training set; Fit Time is the average per fold. &#9733; = best run of that model (by F1).</p>
+<table class="dataframe t">
+  <thead>
+    <tr style="text-align: right;">
+      <th>Run ID</th>
+      <th>Model</th>
+      <th>Parameters</th>
+      <th>Accuracy</th>
+      <th>Precision</th>
+      <th>Recall</th>
+      <th>F1</th>
+      <th>Fit Time (s)</th>
+      <th>Best</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>KNN-01</td>
+      <td>KNN</td>
+      <td>n_neighbors=5, weights=uniform</td>
+      <td>0.766</td>
+      <td>0.572</td>
+      <td>0.470</td>
+      <td>0.515</td>
+      <td>0.081</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>KNN-02</td>
+      <td>KNN</td>
+      <td>n_neighbors=5, weights=distance</td>
+      <td>0.756</td>
+      <td>0.547</td>
+      <td>0.471</td>
+      <td>0.506</td>
+      <td>0.080</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>KNN-03</td>
+      <td>KNN</td>
+      <td>n_neighbors=15, weights=uniform</td>
+      <td>0.780</td>
+      <td>0.609</td>
+      <td>0.485</td>
+      <td>0.540</td>
+      <td>0.075</td>
+      <td>★</td>
+    </tr>
+    <tr>
+      <td>KNN-04</td>
+      <td>KNN</td>
+      <td>n_neighbors=15, weights=distance</td>
+      <td>0.776</td>
+      <td>0.597</td>
+      <td>0.481</td>
+      <td>0.532</td>
+      <td>0.053</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>KNN-05</td>
+      <td>KNN</td>
+      <td>n_neighbors=25, weights=uniform</td>
+      <td>0.783</td>
+      <td>0.619</td>
+      <td>0.473</td>
+      <td>0.536</td>
+      <td>0.027</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>KNN-06</td>
+      <td>KNN</td>
+      <td>n_neighbors=25, weights=distance</td>
+      <td>0.777</td>
+      <td>0.601</td>
+      <td>0.478</td>
+      <td>0.532</td>
+      <td>0.031</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>DT-01</td>
+      <td>Decision Tree</td>
+      <td>max_depth=3, min_samples_leaf=1</td>
+      <td>0.737</td>
+      <td>0.504</td>
+      <td>0.776</td>
+      <td>0.611</td>
+      <td>0.027</td>
+      <td>★</td>
+    </tr>
+    <tr>
+      <td>DT-02</td>
+      <td>Decision Tree</td>
+      <td>max_depth=3, min_samples_leaf=5</td>
+      <td>0.737</td>
+      <td>0.504</td>
+      <td>0.776</td>
+      <td>0.611</td>
+      <td>0.031</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>DT-03</td>
+      <td>Decision Tree</td>
+      <td>max_depth=3, min_samples_leaf=20</td>
+      <td>0.737</td>
+      <td>0.504</td>
+      <td>0.776</td>
+      <td>0.611</td>
+      <td>0.024</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>DT-04</td>
+      <td>Decision Tree</td>
+      <td>max_depth=5, min_samples_leaf=1</td>
+      <td>0.711</td>
+      <td>0.476</td>
+      <td>0.821</td>
+      <td>0.601</td>
+      <td>0.026</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>DT-05</td>
+      <td>Decision Tree</td>
+      <td>max_depth=5, min_samples_leaf=5</td>
+      <td>0.712</td>
+      <td>0.476</td>
+      <td>0.821</td>
+      <td>0.602</td>
+      <td>0.025</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>DT-06</td>
+      <td>Decision Tree</td>
+      <td>max_depth=5, min_samples_leaf=20</td>
+      <td>0.711</td>
+      <td>0.475</td>
+      <td>0.821</td>
+      <td>0.601</td>
+      <td>0.024</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>DT-07</td>
+      <td>Decision Tree</td>
+      <td>max_depth=10, min_samples_leaf=1</td>
+      <td>0.720</td>
+      <td>0.482</td>
+      <td>0.717</td>
+      <td>0.576</td>
+      <td>0.034</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>DT-08</td>
+      <td>Decision Tree</td>
+      <td>max_depth=10, min_samples_leaf=5</td>
+      <td>0.716</td>
+      <td>0.477</td>
+      <td>0.721</td>
+      <td>0.574</td>
+      <td>0.033</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>DT-09</td>
+      <td>Decision Tree</td>
+      <td>max_depth=10, min_samples_leaf=20</td>
+      <td>0.726</td>
+      <td>0.490</td>
+      <td>0.757</td>
+      <td>0.595</td>
+      <td>0.030</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>DT-10</td>
+      <td>Decision Tree</td>
+      <td>max_depth=None, min_samples_leaf=1</td>
+      <td>0.731</td>
+      <td>0.494</td>
+      <td>0.483</td>
+      <td>0.488</td>
+      <td>0.036</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>DT-11</td>
+      <td>Decision Tree</td>
+      <td>max_depth=None, min_samples_leaf=5</td>
+      <td>0.717</td>
+      <td>0.476</td>
+      <td>0.641</td>
+      <td>0.546</td>
+      <td>0.035</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>DT-12</td>
+      <td>Decision Tree</td>
+      <td>max_depth=None, min_samples_leaf=20</td>
+      <td>0.726</td>
+      <td>0.490</td>
+      <td>0.754</td>
+      <td>0.594</td>
+      <td>0.029</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>RF-01</td>
+      <td>Random Forest</td>
+      <td>max_depth=5, min_samples_leaf=1, n_estimators=100</td>
+      <td>0.718</td>
+      <td>0.483</td>
+      <td>0.835</td>
+      <td>0.611</td>
+      <td>0.422</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>RF-02</td>
+      <td>Random Forest</td>
+      <td>max_depth=5, min_samples_leaf=1, n_estimators=200</td>
+      <td>0.714</td>
+      <td>0.478</td>
+      <td>0.843</td>
+      <td>0.610</td>
+      <td>0.857</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>RF-03</td>
+      <td>Random Forest</td>
+      <td>max_depth=5, min_samples_leaf=5, n_estimators=100</td>
+      <td>0.716</td>
+      <td>0.480</td>
+      <td>0.838</td>
+      <td>0.610</td>
+      <td>0.415</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>RF-04</td>
+      <td>Random Forest</td>
+      <td>max_depth=5, min_samples_leaf=5, n_estimators=200</td>
+      <td>0.713</td>
+      <td>0.477</td>
+      <td>0.843</td>
+      <td>0.610</td>
+      <td>0.875</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>RF-05</td>
+      <td>Random Forest</td>
+      <td>max_depth=10, min_samples_leaf=1, n_estimators=100</td>
+      <td>0.741</td>
+      <td>0.508</td>
+      <td>0.758</td>
+      <td>0.608</td>
+      <td>0.543</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>RF-06</td>
+      <td>Random Forest</td>
+      <td>max_depth=10, min_samples_leaf=1, n_estimators=200</td>
+      <td>0.742</td>
+      <td>0.509</td>
+      <td>0.759</td>
+      <td>0.609</td>
+      <td>1.148</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>RF-07</td>
+      <td>Random Forest</td>
+      <td>max_depth=10, min_samples_leaf=5, n_estimators=100</td>
+      <td>0.740</td>
+      <td>0.507</td>
+      <td>0.775</td>
+      <td>0.613</td>
+      <td>0.497</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>RF-08</td>
+      <td>Random Forest</td>
+      <td>max_depth=10, min_samples_leaf=5, n_estimators=200</td>
+      <td>0.742</td>
+      <td>0.510</td>
+      <td>0.779</td>
+      <td>0.616</td>
+      <td>1.162</td>
+      <td>★</td>
+    </tr>
+    <tr>
+      <td>RF-09</td>
+      <td>Random Forest</td>
+      <td>max_depth=None, min_samples_leaf=1, n_estimators=100</td>
+      <td>0.747</td>
+      <td>0.520</td>
+      <td>0.603</td>
+      <td>0.558</td>
+      <td>0.747</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>RF-10</td>
+      <td>Random Forest</td>
+      <td>max_depth=None, min_samples_leaf=1, n_estimators=200</td>
+      <td>0.746</td>
+      <td>0.519</td>
+      <td>0.600</td>
+      <td>0.556</td>
+      <td>1.159</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>RF-11</td>
+      <td>Random Forest</td>
+      <td>max_depth=None, min_samples_leaf=5, n_estimators=100</td>
+      <td>0.751</td>
+      <td>0.521</td>
+      <td>0.746</td>
+      <td>0.613</td>
+      <td>0.619</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>RF-12</td>
+      <td>Random Forest</td>
+      <td>max_depth=None, min_samples_leaf=5, n_estimators=200</td>
+      <td>0.750</td>
+      <td>0.520</td>
+      <td>0.745</td>
+      <td>0.612</td>
+      <td>0.888</td>
+      <td></td>
+    </tr>
+  </tbody>
+</table>
+
+</body></html>
