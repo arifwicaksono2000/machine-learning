@@ -1,4 +1,4 @@
-# Machine Learning Cheatsheet (Day 1–3 + Regression)
+# Machine Learning Cheatsheet (Day 1–4, Regression & Churn Case Study)
 
 ## Contents
 
@@ -46,6 +46,28 @@
 **Bonus**
 
 31. [Time-Series & Market Data](#31-time-series--market-data)
+
+**Day 4: Pipelines & Deployment**
+
+32. [Saving a Full Pipeline & Predicting New Input](#32-saving-a-full-pipeline--predicting-new-input)
+33. [Why LabelEncoder Breaks Inside a ColumnTransformer](#33-why-labelencoder-breaks-inside-a-columntransformer)
+34. [OrdinalEncoder vs One-Hot: Does the Fake Order Matter?](#34-ordinalencoder-vs-one-hot-does-the-fake-order-matter)
+
+**Case Study: Telco Customer Churn**
+
+35. [From Raw Data to Ready Data](#35-from-raw-data-to-ready-data)
+36. [Filling Missing Values: 0, Mean, Median or SimpleImputer](#36-filling-missing-values-0-mean-median-or-simpleimputer)
+37. [Feature Engineering Operations](#37-feature-engineering-operations)
+38. [Comparing Several Models (Experiment Runs)](#38-comparing-several-models-experiment-runs)
+39. [Reading the Metrics in Plain Terms](#39-reading-the-metrics-in-plain-terms)
+40. [Class Imbalance & class_weight='balanced'](#40-class-imbalance--class_weightbalanced)
+41. [How Random Forest Works & Why It Won](#41-how-random-forest-works--why-it-won)
+42. [Cross-Validation Splitters](#42-cross-validation-splitters)
+43. [Churn Workflow Summary & Results](#43-churn-workflow-summary--results)
+
+**Tools**
+
+44. [VS Code: Library Names Not Highlighted](#44-vs-code-library-names-not-highlighted)
 
 ---
 
@@ -1536,3 +1558,605 @@ tscv = TimeSeriesSplit(n_splits=5)   # each fold trains on the past and validate
 - **LSTM / Transformer** on price alone: popular in tutorials, but rarely beats simpler models. They make more sense with unusual inputs (news text, order-book data).
 
 > The model is maybe 10% of the problem. The other 90% is honest testing: split by time, avoid leakage, include costs, and test out of sample. Most strategies that look profitable in a backtest fail with real money.
+
+---
+
+# DAY 4
+
+Case study: the Adult income data again, but this time the preprocessing and the model are packed into **one Pipeline**, saved, and used to predict new input.
+
+## 32. Saving a Full Pipeline & Predicting New Input
+
+```python
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OrdinalEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+import joblib
+
+col_num = ['age', 'num_edu', 'capital-gain', 'capital-loss', 'work-hour-week']
+col_cat = ['workclass', 'occupation', 'country']
+
+preprocessing = ColumnTransformer([
+    ('num', StandardScaler(), col_num),
+    ('cat', OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1), col_cat)
+])
+
+final_pipeline = Pipeline([
+    ('preprocessing', preprocessing),
+    ('model', RandomForestClassifier(n_estimators=100, max_depth=20,
+                                     min_samples_leaf=2, min_samples_split=5))
+])
+
+final_pipeline.fit(X_train, y_train)                       # raw data in
+joblib.dump(final_pipeline, 'pipeline_rfc_final.joblib')   # saves encoder + scaler + model together
+joblib.load('pipeline_rfc_final.joblib').predict(X_test)
+```
+
+### Predicting from user input
+
+```python
+def predict_income():
+    data = {}
+    for i in col_cat:
+        data[i] = input(f'Masukkan nilai {i}')
+    for i in col_num:
+        data[i] = float(input(f'Masukkan nilai {i}'))
+
+    df = pd.DataFrame(data, index=[0])     # one row, with the same column names as training
+    result = joblib.load('pipeline_rfc_final.joblib').predict(df)
+    return result[0]
+```
+
+> ⚠️ `.predict()` returns a **NumPy array**, so use `result[0]`. `result.values[0]` fails with `AttributeError`, because only pandas objects have `.values`.
+
+> ⚠️ Without `handle_unknown=...`, an encoder **crashes** on a category it never saw in training (for example a misspelled country typed by a user). Always set it for anything that receives new data.
+
+> 💡 The pipeline is the whole point of deployment: new raw data goes in, and the **same** encoding and scaling learned from training are applied automatically.
+
+---
+
+## 33. Why LabelEncoder Breaks Inside a ColumnTransformer
+
+```python
+('cat', LabelEncoder(), col_cat)     # ❌
+# TypeError: LabelEncoder.fit_transform() takes 2 positional arguments but 3 were given
+```
+
+**LabelEncoder is made only for the target `y`.** Compare the method signatures:
+
+| Class | Signature | Made for |
+|---|---|---|
+| `LabelEncoder` | `fit_transform(self, y)` | the target `y` |
+| `StandardScaler`, `OrdinalEncoder`, `OneHotEncoder` | `fit_transform(self, X, y=None)` | features `X` (accept `y` and ignore it) |
+
+Inside scikit-learn (`sklearn/pipeline.py`), every transformer is called like this:
+
+```python
+transformer.fit_transform(X, y)
+# Python actually runs:  LabelEncoder.fit_transform(transformer, X, y)
+#                                                   ^self       ^X ^y  -> 3 arguments
+```
+
+Python passes the object itself (`self`) automatically, so there are 3 arguments for a method that has room for only 2.
+
+How your code reaches that line:
+
+```
+final_pipeline.fit(X_train, y_train)
+ └─ Pipeline._fit                             runs each step in order
+     └─ ColumnTransformer.fit_transform(X, y)
+         └─ _fit_transform_one(...)           once per transformer: 'num', then 'cat'
+             └─ LabelEncoder.fit_transform(X, y)   ← breaks here
+```
+
+> **Rule:** `LabelEncoder` (or `.map()`) for **y**. `OrdinalEncoder` / `OneHotEncoder` for **features**.
+
+---
+
+## 34. OrdinalEncoder vs One-Hot: Does the Fake Order Matter?
+
+`OrdinalEncoder` turns categories into numbers (Cuba=4, India=17, USA=38), which suggests an order that doesn't exist. Whether that hurts depends on the model.
+
+**Trees don't do math with the numbers.** They only ask yes/no questions:
+
+```
+Split "country <= 17"  ->  left: {Cuba, India, ...}   right: {Mexico, USA, ...}
+```
+
+The tree never decides USA is "worth more" than Cuba; it just splits the categories into groups. The cost: if similar categories don't sit next to each other, the tree needs **more splits**. That's a small loss of efficiency, not a wrong result.
+
+| Model | Effect of the fake order | Use |
+|---|---|---|
+| Decision Tree / Random Forest | Mostly harmless | `OrdinalEncoder` is fine (one-hot also works) |
+| KNN | USA (38) looks "far" from Cuba (4): meaningless distances | `OneHotEncoder` |
+| Linear / logistic regression | Learns "+1 in country code changes the result by X": nonsense | `OneHotEncoder` |
+| Neural network | Same problem | `OneHotEncoder` |
+
+> 💡 It also doesn't make the **test** unfair: the encoder is fitted on train, and the same mapping is applied to test.
+> Day 3 evidence: switching the MLP to one-hot gained only ~0.5 points; adding better columns gained far more (section 23).
+
+---
+
+# CASE STUDY: TELCO CUSTOMER CHURN
+
+Predict whether a customer will **leave** the company (`Churn` = Yes/No).
+File: `datasets/WA_Fn-UseC_-Telco-Customer-Churn.csv`, 7,043 customers, 21 columns.
+Full runnable version: `churn_report.py` (writes a printable report to `reports/churn_report.html`).
+
+## 35. From Raw Data to Ready Data
+
+### What was found in the data
+
+| Problem | Details | Action |
+|---|---|---|
+| ID column | `customerID` is unique per row | Drop it |
+| **Hidden missing values** | `TotalCharges` holds numbers but is stored as **text**; 11 rows are `' '` (a space), so `isnull()` shows 0 | Convert to numeric, then fill |
+| Why they're blank | All 11 have `tenure = 0`: new customers not billed yet | Fill with **0** |
+| Imbalanced target | 73% No / 27% Yes | `stratify=y`, judge by recall/F1, `class_weight='balanced'` |
+| Categories | 15 text columns, mostly Yes/No, some with `'No internet service'` | One-hot encode |
+
+### Code
+
+```python
+df = pd.read_csv('datasets/WA_Fn-UseC_-Telco-Customer-Churn.csv')
+df.info()                                   # TotalCharges shows as text -> junk inside
+
+df = df.drop(columns='customerID')
+df['TotalCharges'] = pd.to_numeric(df['TotalCharges'], errors='coerce')   # ' ' -> NaN
+df['TotalCharges'] = df['TotalCharges'].fillna(0)                          # NaN -> 0
+
+feature = ['gender', 'SeniorCitizen', 'Partner', 'Dependents', 'tenure',
+           'Contract', 'MonthlyCharges', 'TotalCharges']
+X = df[feature].copy()                      # AFTER cleaning
+y = df['Churn'].map({'No': 0, 'Yes': 1})    # 1 = churned
+
+col_num = ['SeniorCitizen', 'tenure', 'MonthlyCharges', 'TotalCharges']   # SeniorCitizen is already 0/1
+col_cat = ['gender', 'Partner', 'Dependents', 'Contract']
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y)
+```
+
+What the two `TotalCharges` lines do to a blank row:
+
+| Step | Value | Column type |
+|---|---|---|
+| Raw CSV | `' '` | text |
+| `pd.to_numeric(..., errors='coerce')` | `NaN` (`coerce` = "can't convert → NaN" instead of crashing) | number |
+| `.fillna(0)` | `0.0` | number |
+
+> ⚠️ **Cell order matters.** If `X = df[feature]` runs **before** the `TotalCharges` fix, `X` keeps the old text column (with pandas copy-on-write, later changes to `df` don't reach `X`). Create `X` **after** cleaning.
+
+> ⚠️ Avoid listing a column twice in `feature` (e.g. `'MonthlyCharges'` twice): `df[feature]` creates duplicate columns.
+
+### Checklist for any new dataset
+
+```
+1. info()            -> numbers stored as text? (hidden junk)
+2. Hidden missing    -> ' ', '?', 'unknown', -1, 0 used as "missing"
+3. Drop IDs          -> unique per row = useless to the model
+4. Target balance    -> imbalanced? then stratify + F1/recall + class_weight
+5. Split X / y       -> encode y to 0/1
+6. Group columns     -> numeric vs categorical
+7. Split train/test  -> BEFORE fitting any scaler/encoder/imputer
+8. Pipeline          -> imputer + scaler + encoder + model in one object
+```
+
+---
+
+## 36. Filling Missing Values: 0, Mean, Median or SimpleImputer
+
+```python
+df['TotalCharges'] = df['TotalCharges'].fillna(0)                          # a known value
+df['TotalCharges'] = df['TotalCharges'].fillna(df['TotalCharges'].mean())  # the average
+```
+
+**Why 0 is right here:** `TotalCharges` = everything the customer has paid so far, and the blank rows are customers with `tenure = 0`. The mean (~2,280) would claim brand-new customers had already paid thousands.
+
+**Why `df[...].mean()` before the split is a small leak:** the test rows help decide the fill value (same idea as section 18). It barely matters for 11 of 7,043 rows, but it's a habit worth building.
+
+### The leak-free way: `SimpleImputer` inside the pipeline
+
+```python
+from sklearn.impute import SimpleImputer
+
+num_pipe = Pipeline([
+    ('impute', SimpleImputer(strategy='median')),   # 'mean', 'median', 'most_frequent', 'constant'
+    ('scale', StandardScaler())
+])
+
+preprocessing = ColumnTransformer([
+    ('num', num_pipe, col_num),
+    ('cat', OneHotEncoder(handle_unknown='ignore'), col_cat)
+])
+```
+
+Keep the `pd.to_numeric(..., errors='coerce')` line so blanks become `NaN`, and skip the `fillna`. The imputer learns its value from **train only** and applies it to new data too.
+
+| Situation | Fill with |
+|---|---|
+| You know what the value should be | That value (here: 0) |
+| Missing at random, roughly symmetric data | Mean |
+| Skewed data or outliers (`TotalCharges` is skewed) | **Median** |
+| Categories | Mode (`most_frequent`) |
+
+> 💡 Always ask **why** a value is missing before choosing how to fill it.
+
+---
+
+## 37. Feature Engineering Operations
+
+| No | Operation | Columns | Reason | Where in the code |
+|---|---|---|---|---|
+| 1 | Drop column | `customerID` | Unique ID, no predictive value | `df.drop(columns='customerID')` |
+| 2 | Data type conversion (text → number) | `TotalCharges` | Stored as text | `pd.to_numeric(errors='coerce')` |
+| 3 | Missing value imputation (fill with 0) | `TotalCharges` | 11 blanks, all `tenure = 0` | `.fillna(0)` |
+| 4 | Feature selection | the 8 columns in `feature` | Columns relevant to churn | `X = df[feature]` |
+| 5 | Target encoding (label mapping) | `Churn` | No = 0, Yes = 1 | `.map({'No': 0, 'Yes': 1})` |
+| 6 | One-hot encoding | `col_cat` | Categories have no order | `('cat', OneHotEncoder(...), col_cat)` |
+| 7 | Standard scaling | `col_num` | Same scale for all numbers (needed for KNN) | `('num', StandardScaler(), col_num)` |
+
+> 💡 Rows 6 and 7 are only **defined** in the `ColumnTransformer`. They actually run when the pipeline is fitted (learn on train) and when it predicts (transform only). Check that scaling happened:
+> `final_model.named_steps['preprocessing'].named_transformers_['num'].mean_`
+
+> ⚠️ `class_weight='balanced'` is a **model setting**, not feature engineering.
+
+### Creating new features (optional)
+
+Strictly, feature engineering often means **making new columns**:
+
+```python
+df['AvgCharges'] = df['TotalCharges'] / df['tenure'].replace(0, 1)          # avg spend per month
+df['TenureGroup'] = pd.cut(df['tenure'], bins=[-1, 12, 24, 48, 72],
+                           labels=['0-1y', '1-2y', '2-4y', '4-6y'])           # binning (11.2)
+```
+
+Columns left out of `feature` that are usually **strong churn predictors**: `InternetService` (fiber optic churns a lot), `PaymentMethod` (electronic check churns a lot), `OnlineSecurity`, `TechSupport`, `PaperlessBilling`. Adding better columns usually beats a fancier model (section 23).
+
+---
+
+## 38. Comparing Several Models (Experiment Runs)
+
+### Setup
+
+```python
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+
+preprocessing = ColumnTransformer([
+    ('num', StandardScaler(), col_num),
+    ('cat', OneHotEncoder(handle_unknown='ignore', sparse_output=False), col_cat)
+])
+# sparse_output=False -> a normal (dense) array; needed by GaussianNB, harmless for others
+
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+models = {
+    'KNN': (KNeighborsClassifier(), {
+        'model__n_neighbors': [5, 15, 25],
+        'model__weights': ['uniform', 'distance']
+    }),
+    'Decision Tree': (DecisionTreeClassifier(random_state=42, class_weight='balanced'), {
+        'model__max_depth': [3, 5, 10, None],
+        'model__min_samples_leaf': [1, 5, 20]
+    }),
+    'Random Forest': (RandomForestClassifier(random_state=42, class_weight='balanced'), {
+        'model__n_estimators': [100, 200],
+        'model__max_depth': [5, 10, None],
+        'model__min_samples_leaf': [1, 5]
+    }),
+}
+```
+
+> `model__` = the pipeline step name `'model'` + double underscore (section 23).
+
+### Tune every model, record every run
+
+```python
+import time
+
+scoring = ['accuracy', 'precision', 'recall', 'f1']
+prefix = {'KNN': 'KNN', 'Decision Tree': 'DT', 'Random Forest': 'RF'}
+all_runs, best_models = [], {}
+
+for name, (model, params) in models.items():
+    pipe = Pipeline([('preprocessing', preprocessing), ('model', model)])
+    grid = GridSearchCV(pipe, params, cv=cv, scoring=scoring, refit='f1', n_jobs=-1)
+    #                                        ^ several metrics    ^ pick the best by F1
+    grid.fit(X_train, y_train)
+    best_models[name] = grid.best_estimator_
+
+    cvr = pd.DataFrame(grid.cv_results_)          # one row per parameter combination
+    for i, row in cvr.iterrows():
+        all_runs.append({
+            'Run ID': f'{prefix[name]}-{i+1:02d}',
+            'Model': name,
+            'Parameters': ', '.join(f"{k.replace('model__', '')}={v}" for k, v in row['params'].items()),
+            'Accuracy': row['mean_test_accuracy'],
+            'Precision': row['mean_test_precision'],
+            'Recall': row['mean_test_recall'],
+            'F1': row['mean_test_f1'],
+            'Fit Time (s)': row['mean_fit_time'],
+        })
+
+runs = pd.DataFrame(all_runs).round(3)     # 42 runs: KNN 6, DT 12, RF 12 (CV scores on train)
+```
+
+### Final comparison on the test set
+
+```python
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+results = []
+for name, model in best_models.items():
+    y_pred = model.predict(X_test)
+    results.append({'Model': name,
+                    'Accuracy': accuracy_score(y_test, y_pred),
+                    'Precision': precision_score(y_test, y_pred),
+                    'Recall': recall_score(y_test, y_pred),
+                    'F1': f1_score(y_test, y_pred)})
+
+results = pd.DataFrame(results).sort_values('F1', ascending=False)
+
+best_name = results.iloc[0]['Model']
+final_model = best_models[best_name]
+joblib.dump(final_model, 'churn_best_model.joblib')    # preprocessing + model together
+```
+
+> 💡 Choose by **F1 or recall for class 1**, not accuracy. A model that always says "No" already scores 73% accuracy.
+
+> 💡 Print a table as Markdown without the `tabulate` library:
+> ```python
+> def md_table(df):
+>     cols = list(df.columns)
+>     lines = ['| ' + ' | '.join(cols) + ' |', '|' + '|'.join(['---'] * len(cols)) + '|']
+>     lines += ['| ' + ' | '.join(str(r[c]) for c in cols) + ' |' for _, r in df.iterrows()]
+>     return '\n'.join(lines)
+> ```
+
+---
+
+## 39. Reading the Metrics in Plain Terms
+
+Think of the model as a **security guard spotting customers about to leave**. Every guess lands in one of four boxes:
+
+| | Model says **"leaves"** | Model says **"stays"** |
+|---|---|---|
+| **Actually left** | ✅ Caught (TP) | ❌ Missed (FN) |
+| **Actually stayed** | ⚠️ False alarm (FP) | ✅ Correctly ignored (TN) |
+
+Random Forest on the test set (1,409 customers: 1,035 stayed, 374 left):
+
+| | Before (no balance) | After `class_weight='balanced'` |
+|---|---|---|
+| ✅ Caught | 173 | **300** |
+| ❌ Missed | **201** | 74 |
+| ⚠️ False alarm | 91 | **290** |
+| ✅ Correctly ignored | **944** | 745 |
+| **Accuracy** = right / all | 79% | 74% |
+| **Recall** = caught / all who left | 46% | **80%** |
+| **Precision** = caught / all alarms | 66% | 51% |
+| **F1** = balance of the two | 0.54 | **0.62** |
+
+> - **Recall** = "Did I find them?"
+> - **Precision** = "When I raise an alarm, am I right?"
+> - **Accuracy** = "How many guesses were right overall?" Misleading when one answer is much more common.
+
+**Which model is better?** Ask what each mistake **costs**:
+- ⚠️ False alarm: you call a happy customer, maybe offer a small discount. Cheap.
+- ❌ Missed churner: the customer leaves and their monthly payments are gone. Expensive.
+
+So the "after" model is better despite lower accuracy. **Choose the metric by which mistake hurts more.**
+
+In `classification_report`: **macro avg** treats both classes equally (more honest with imbalanced data); **weighted avg** is dominated by the large class.
+
+---
+
+## 40. Class Imbalance & class_weight='balanced'
+
+### Skewness vs class imbalance: two different problems
+
+| | Skewness | Class imbalance |
+|---|---|---|
+| Which column | A numeric **feature** (X) | The **target** (y) |
+| Question | "Are the values spread out unevenly?" | "Is one answer much more common?" |
+| Example | `TotalCharges` (many small, few large) | `Churn` (73% No, 27% Yes) |
+| Fix | `log1p`, `sqrt`, binning (11.2) | `class_weight='balanced'`, resampling, threshold |
+
+### The problem
+
+The model's goal is to make as few mistakes as possible. With 3 in 4 customers staying, it learns a shortcut: **"when in doubt, say stays."**
+
+### What `balanced` does
+
+It gives each row a weight by class:
+
+```
+weight = total rows / (number of classes × rows in that class)
+```
+
+| Class (train set) | Rows | Weight | Total weight |
+|---|---|---|---|
+| No (stayed) | 4,139 | 5634 / (2 × 4139) = **0.68** | ~2,817 |
+| Yes (churned) | 1,495 | 5634 / (2 × 1495) = **1.88** | ~2,817 |
+
+Each churner counts ~2.8× more, and both classes end up with **equal total weight**, as if the data were 50/50. No rows are added or removed.
+
+**Effect on a tree leaf** with 60 stayers and 30 churners:
+
+```
+Without balanced:  No 60          vs  Yes 30           -> predicts "stays"
+With balanced:     No 60×0.68=40.8 vs Yes 30×1.88=56.4 -> predicts "churns"
+```
+
+The weights also change **where** the tree splits (it prefers splits that separate churners well). In logistic regression, a mistake on a churner adds 1.88 to the error, a mistake on a stayer only 0.68.
+
+### KNN's `weights` is NOT balancing
+
+| | KNN `weights='distance'` | `class_weight='balanced'` |
+|---|---|---|
+| Weights by | **How close** the neighbor is (1 / distance) | **Which class** the row belongs to |
+| Fixes imbalance? | ❌ No | ✅ Yes |
+
+That's why KNN kept a recall of ~0.45 after tuning both `uniform` and `distance`.
+
+### How to balance models without `class_weight` (KNN, Naive Bayes)
+
+**1. Resampling** (library `imbalanced-learn`, applied to the training data only, via its own Pipeline):
+
+| Method | What it does |
+|---|---|
+| Oversampling | Copy "Yes" rows until both classes are equal |
+| Undersampling | Remove some "No" rows until both are equal |
+| SMOTE | Create new synthetic "Yes" rows between existing ones |
+
+**2. Lower the decision threshold** (no retraining):
+
+```python
+proba = best_models['KNN'].predict_proba(X_test)[:, 1]   # share of churn votes
+y_pred = (proba >= 0.3).astype(int)                       # churn at 30% instead of 50%
+```
+
+> ⚠️ Pick the threshold with cross-validation on train, not by looking at test results.
+
+---
+
+## 41. How Random Forest Works & Why It Won
+
+### A forest = many decision trees (RF-08 has 200)
+
+Two kinds of **randomness** make every tree different:
+
+**1. Bootstrap sampling (different customers).** Each tree draws 5,634 customers from the 5,634 training customers **with replacement**, so some appear twice and others not at all. Each tree sees ~63% of the customers.
+
+```
+Tree 1 trains on:  A A C D F F G ...   (B, E, H left out)
+Tree 2 trains on:  B C C E G H H ...   (A, D, F left out)
+```
+
+**2. Random columns at each split.** After one-hot encoding there are 13 columns. A normal tree checks all 13 at every split; a forest tree may only choose from a random √13 ≈ **3** columns, drawn fresh at each split. Without this, every tree would start with the same strongest column (`Contract` / `tenure`) and look alike. Forcing some trees to work without it makes them find other patterns.
+
+**Combining:** scikit-learn **averages the trees' probabilities** (average ≥ 0.5 → churn).
+
+**Why it works (wisdom of the crowd):** each tree overfits its own sample, but in a **different** way. Averaging cancels the random mistakes and keeps the patterns most trees agree on.
+
+`random_state=42` fixes the randomness, so you get the same forest every run.
+
+### Results (test set)
+
+| Model | Best run | Best parameters | Accuracy | Precision | Recall | F1 |
+|---|---|---|---|---|---|---|
+| **Random Forest** | RF-08 | max_depth=10, min_samples_leaf=5, n_estimators=200 | 0.742 | 0.508 | **0.802** | **0.622** |
+| Decision Tree | DT-01 | max_depth=3, min_samples_leaf=1 | 0.737 | 0.504 | 0.759 | 0.606 |
+| KNN | KNN-03 | n_neighbors=15, weights=uniform | 0.767 | 0.577 | 0.452 | 0.507 |
+
+### Why Random Forest won
+
+1. **KNN lost because it can't use `class_weight`.** Most of its 15 neighbors are stayers, so it usually votes "stays".
+2. **Averaging reduces overfitting**, so the forest can grow deeper than a single tree:
+
+| Run | Model, unlimited depth (`max_depth=None`, `min_samples_leaf=1`) | F1 (CV) |
+|---|---|---|
+| DT-10 | Decision Tree | **0.488** |
+| RF-09 | Random Forest | **0.558** |
+
+   The single tree is best kept shallow (`max_depth=3`); the forest is best at `max_depth=10`.
+3. **The win is small.** With only 8 features the main pattern is simple ("month-to-month + short tenure + high monthly charges = likely to leave"), so even a 3-level tree gets close.
+
+> 💡 **Random Forest isn't automatically the best.** Before `class_weight='balanced'` was added, Naive Bayes ranked first by F1 (0.574) because it predicted "churn" eagerly (recall 0.79). Naive Bayes assumes features are independent, but `tenure`, `TotalCharges` and `Contract` overlap, so it counts the same evidence several times. A fair comparison gives every model the same advantages.
+
+> 💡 **Don't over-read small gaps.** A 0.01–0.03 difference in F1 on 374 churners is a handful of customers and can change with a different random split.
+
+---
+
+## 42. Cross-Validation Splitters
+
+**Cross-validation** = the technique (split several times, train and test each time, average). **The splitter** = the rule for which rows go where. They're all cross-validation; a single `train_test_split` is a **holdout** split, not CV.
+
+### Why `StratifiedKFold(n_splits=5, shuffle=True, random_state=42)`
+
+```
+Round 1:  [TEST] [train] [train] [train] [train]
+Round 2:  [train] [TEST] [train] [train] [train]
+...                                              Score = average of the 5 rounds
+```
+
+- **Stratified**: every fold keeps the train set's ~26.5% churners (~299 per fold). Plain `KFold` could give folds with 22% or 31%, so scores would jump because of **luck in the split**.
+- **`shuffle=True`**: mix rows first, in case the file is sorted (by date, region, …).
+- **`random_state=42`**: same folds every run, and **all models are tested on the same folds** (a fair comparison).
+- `GridSearchCV(cv=5)` already uses `StratifiedKFold` for classifiers, but **without** shuffling. Creating it yourself adds shuffle + random_state.
+
+### Other splitters
+
+| Splitter | What it does | Use when |
+|---|---|---|
+| `KFold` | k random parts | Regression |
+| `StratifiedKFold` | k parts, same class ratio | Classification ← churn |
+| `RepeatedStratifiedKFold(n_splits=5, n_repeats=3)` | k-fold repeated with new shuffles (15 rounds) | Close results need a more reliable comparison (3× slower) |
+| `GroupKFold` / `StratifiedGroupKFold` | All rows of one group stay in one fold; `grid.fit(X, y, groups=df['customerID'])` | Several rows per customer / patient / house |
+| `TimeSeriesSplit` | Train on the past, test on what comes after; never shuffle | Time-ordered data (section 31) |
+| `LeaveOneOut` | Every row is its own test fold | Tiny datasets (under ~100 rows) |
+| `ShuffleSplit` / `StratifiedShuffleSplit` | n independent random splits ("Monte Carlo CV") | Huge data, quick checks |
+
+> **Rule of thumb:** split the way the model will be used. New customers → test on unseen customers. Predicting the future → test on later data. New patients → keep each patient in one fold.
+
+### How CV and holdout work together
+
+```
+All data (7,043)
+ ├── train_test_split ──> Test set (1,409)      <- holdout: touched ONCE, at the very end
+ └──────────────────────> Train set (5,634)
+                           └── StratifiedKFold (5 folds) inside GridSearchCV
+                                -> cross-validation: picks the best parameters
+```
+
+The CV scores **choose** the settings; the test-set score is the **final result** to report.
+
+---
+
+## 43. Churn Workflow Summary & Results
+
+```
+1. Load & explore         info(): TotalCharges stored as text; Churn 73/27
+2. Clean                  drop customerID; to_numeric(errors='coerce'); fillna(0)
+3. Select features        X = df[feature] AFTER cleaning; y = Churn mapped to 0/1
+4. Group columns          col_num / col_cat
+5. Split                  train_test_split(..., stratify=y)
+6. Pipeline               ColumnTransformer(StandardScaler + OneHotEncoder) + model
+7. Balance                class_weight='balanced' (or resampling / lower threshold)
+8. Tune & compare         GridSearchCV(scoring=[...], refit='f1') + StratifiedKFold, every run recorded
+9. Final test             best run per model on the test set; judge by recall/F1 of class 1
+10. Save & report         joblib.dump(pipeline); churn_report.py -> reports/churn_report.html
+```
+
+**Result:** Random Forest (RF-08: `max_depth=10, min_samples_leaf=5, n_estimators=200`, `class_weight='balanced'`) won with **F1 0.622, recall 0.80**: it catches 300 of 374 churners. Decision Tree was close (F1 0.606); KNN was last (recall 0.45, no way to balance).
+
+**Lessons:**
+- `class_weight='balanced'` mattered more than the choice of algorithm.
+- Limiting tree depth was the parameter that helped most; unlimited trees overfit.
+- Adding stronger columns (`InternetService`, `PaymentMethod`, …) is the most likely way to go above F1 0.62.
+
+---
+
+# TOOLS
+
+## 44. VS Code: Library Names Not Highlighted
+
+If imported names like `ColumnTransformer` aren't colored, **Pylance** (the Python language extension) usually can't find the library because it's using a different Python than the one the library is installed in.
+
+In this project, scikit-learn and pandas are installed only in `.venv`; the global Python has no scikit-learn.
+
+1. Notebook: check the kernel picker (top right) says **.venv (3.12.6)**.
+2. `Ctrl+Shift+P` → **Python: Select Interpreter** → pick `.venv`.
+3. Still not colored → **Developer: Reload Window**.
+
+`.vscode/settings.json` makes `.venv` the default for this folder:
+
+```json
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe"
+}
+```
