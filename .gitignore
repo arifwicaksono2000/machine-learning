@@ -1,0 +1,9 @@
+# Virtual environment
+.venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+__pycache__/
+
+# Over GitHub's 100 MB limit (creditcard.zip contains the same data)
+datasets/creditcard.csv
